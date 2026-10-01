@@ -1,0 +1,110 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile document storing registration and personal details",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "username": { "type": "string", "maxLength": 50 },
+        "email": { "type": "string", "maxLength": 120 },
+        "photoURL": { "type": "string" },
+        "birthdate": { "type": "string" },
+        "age": { "type": "number" },
+        "country": { "type": "string" },
+        "countryCode": { "type": "string" },
+        "countryFlag": { "type": "string" },
+        "phone": { "type": "string" },
+        "phoneDialCode": { "type": "string" },
+        "fullPhone": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "profileCompleted": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "lastLogin": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Support chat thread between user and administration",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "lastMessage": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "unreadByAdmin": { "type": "number" },
+        "unreadByUser": { "type": "number" }
+      },
+      "required": ["userId"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual message inside conversation thread",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "maxLength": 5000 },
+        "senderId": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["admin", "user"] },
+        "senderName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["text", "senderId", "senderRole"]
+    },
+    "ProjectRequest": {
+      "title": "ProjectRequest",
+      "description": "Bespoke software project request submitted via wizard",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string" },
+        "appType": { "type": "string" },
+        "budgetRange": { "type": "string" },
+        "timeline": { "type": "string" },
+        "description": { "type": "string", "maxLength": 10000 },
+        "status": { "type": "string", "enum": ["new", "in_progress", "done"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "name", "email", "appType", "status"]
+    },
+    "CompanyUpdate": {
+      "title": "CompanyUpdate",
+      "description": "Official changelog or announcement published by administration",
+      "type": "object",
+      "properties": {
+        "titleAR": { "type": "string", "maxLength": 200 },
+        "titleEN": { "type": "string", "maxLength": 200 },
+        "bodyAR": { "type": "string", "maxLength": 5000 },
+        "bodyEN": { "type": "string", "maxLength": 5000 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["titleAR", "titleEN", "bodyAR", "bodyEN"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile records"
+    },
+    "/conversations/{userId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "User support conversation thread"
+    },
+    "/conversations/{userId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Chat messages within a user conversation"
+    },
+    "/projectRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ProjectRequest" },
+      "description": "Client custom project requests"
+    },
+    "/updates/{updateId}": {
+      "schema": { "$ref": "#/entities/CompanyUpdate" },
+      "description": "Public company changelogs and announcements"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "omarsharrabx99@gmail.com" ||
+         request.auth.token.email == "omarkingx99@gmail.com" ||
+         request.auth.token.email == "omarkingx@gmail.com");
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // 1. Users collection: each user can only read/write their own profile doc
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) || isAdmin();
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 2. Conversations collection: each user can only read/write their own conversation
+    match /conversations/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+
+      // Messages subcollection: strict sender validation
+      match /messages/{messageId} {
+        allow read: if isOwner(userId) || isAdmin();
+
+        allow create: if (
+          // Regular user can only send as their own uid with senderRole == 'user'
+          (isOwner(userId) && request.resource.data.senderId == request.auth.uid && request.resource.data.senderRole == 'user') ||
+          // Admin can send as 'admin'
+          (isAdmin() && request.resource.data.senderRole == 'admin')
+        );
+
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // 3. Project Requests collection
+    match /projectRequests/{requestId} {
+      // User can read their own request; Admin can read all
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      // Authenticated users can create requests with their own uid
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      // Only Admin can update status or delete
+      allow update, delete: if isAdmin();
+    }
+
+    // 4. Updates collection: Official company announcements
+    match /updates/{updateId} {
+      // Public read for website visitors
+      allow read: if true;
+      // Only Admin can publish, update or delete
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}
