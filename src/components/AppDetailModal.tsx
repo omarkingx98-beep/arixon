@@ -8,11 +8,16 @@ import {
   Github,
   ExternalLink,
   Send,
+  Briefcase,
+  Play,
+  Download,
+  Globe,
 } from 'lucide-react';
 import { Language, PortfolioApp } from '../types';
 import { TRANSLATIONS } from '../data/translations';
 import { SOCIAL_LINKS } from '../data/apps';
 import { AppDeviceFrame } from './AppDeviceFrame';
+import { siteContent } from '../data/siteContent';
 
 interface AppDetailModalProps {
   app: PortfolioApp | null;
@@ -107,8 +112,44 @@ export const AppDetailModal: React.FC<AppDetailModalProps> = ({
               </p>
             </div>
 
-            {/* Quick Links (GitHub / Live Demo) */}
-            <div className="flex items-center gap-2 shrink-0">
+            {/* Quick Links (GitHub / Live Demo / Try / Download / Website) */}
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {siteContent.appLinks[app.id]?.tryUrl && (
+                <a
+                  href={siteContent.appLinks[app.id].tryUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black text-white dark:bg-white dark:text-black text-xs font-bold hover:opacity-90 transition-all shadow-xs"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>{isAr ? 'تجربة النظام' : 'Try Demo'}</span>
+                </a>
+              )}
+
+              {siteContent.appLinks[app.id]?.downloadUrl && (
+                <a
+                  href={siteContent.appLinks[app.id].downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-semibold text-neutral-900 dark:text-white transition-all shadow-xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'تحميل' : 'Download'}</span>
+                </a>
+              )}
+
+              {siteContent.appLinks[app.id]?.websiteUrl && (
+                <a
+                  href={siteContent.appLinks[app.id].websiteUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-semibold text-neutral-900 dark:text-white transition-all shadow-xs"
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'الموقع' : 'Website'}</span>
+                </a>
+              )}
+
               {app.githubUrl && (
                 <a
                   href={app.githubUrl}
@@ -183,6 +224,60 @@ export const AppDetailModal: React.FC<AppDetailModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* Real-World Case Study Block (Hidden if empty) */}
+          {(() => {
+            const cs = siteContent.caseStudies.find((item) => item.appId === app.id);
+            if (!cs) return null;
+            return (
+              <div className="p-5 sm:p-6 rounded-2xl bg-neutral-100/70 dark:bg-neutral-850/70 border border-neutral-200 dark:border-neutral-800 space-y-4">
+                <div className="flex items-center gap-2">
+                  <Briefcase className="w-4 h-4 text-amber-500 shrink-0" />
+                  <h4 className="text-xs font-bold tracking-wider uppercase text-neutral-800 dark:text-neutral-200">
+                    {isAr ? 'دراسة حالة واقعية (Case Study)' : 'Real-World Case Study'}
+                  </h4>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs leading-relaxed">
+                  <div>
+                    <span className="font-bold text-neutral-500 block mb-0.5">
+                      {isAr ? 'المستفيد المستهدف:' : 'Target Segment:'}
+                    </span>
+                    <p className="text-neutral-800 dark:text-neutral-200">
+                      {isAr ? cs.forWhomAR : cs.forWhomEN}
+                    </p>
+                  </div>
+
+                  <div>
+                    <span className="font-bold text-neutral-500 block mb-0.5">
+                      {isAr ? 'المشكلة والتحدي:' : 'The Problem:'}
+                    </span>
+                    <p className="text-neutral-800 dark:text-neutral-200">
+                      {isAr ? cs.problemAR : cs.problemEN}
+                    </p>
+                  </div>
+
+                  <div>
+                    <span className="font-bold text-neutral-500 block mb-0.5">
+                      {isAr ? 'الحل الهندسي:' : 'Engineered Solution:'}
+                    </span>
+                    <p className="text-neutral-800 dark:text-neutral-200">
+                      {isAr ? cs.solutionAR : cs.solutionEN}
+                    </p>
+                  </div>
+
+                  <div>
+                    <span className="font-bold text-neutral-500 block mb-0.5">
+                      {isAr ? 'الأثر والنتيجة:' : 'Operational Outcome:'}
+                    </span>
+                    <p className="text-neutral-800 dark:text-neutral-200">
+                      {isAr ? cs.outcomeAR : cs.outcomeEN}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Modal Footer Actions: "Request this app" & "Chat on WhatsApp" */}

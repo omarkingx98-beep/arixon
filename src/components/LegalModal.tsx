@@ -157,11 +157,24 @@ export const LegalModal: React.FC<LegalModalProps> = ({
                 </p>
               </div>
 
-              {/* 5. No Ads & No Selling Data */}
+              {/* 5. Cookie Consent & Analytics */}
               <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 space-y-2">
                 <h4 className="font-bold text-neutral-900 dark:text-white flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-neutral-500" />
-                  <span>5. {isAr ? 'انعدام الإعلانات وعدم بيع البيانات نهائياً' : 'Zero Ads & No Selling of Data'}</span>
+                  <span>5. {isAr ? 'ملفات تعريف الارتباط والتحليلات (Cookies & Analytics)' : 'Cookie Consent & Analytics'}</span>
+                </h4>
+                <p className="text-neutral-600 dark:text-neutral-400">
+                  {isAr
+                    ? 'نطبق سياسة خصوصية صارمة؛ ملفات الارتباط الأساسية تقتصر على إدارة الجلسة واللغة والوضع الليلي. أما تحليلات Firebase Analytics فلا يتم تفعيلها أو تحميلها إطلاقاً إلا بعد موافقتك الصريحة عبر نافذة ملفات تعريف الارتباط. يمكنك في أي وقت تعديل تفضيلاتك بالنقر على "إعدادات ملفات الارتباط" في أسفل الموقع.'
+                    : 'We adhere to strict privacy-by-design principles. Essential cookies are limited to secure sessions, language, and theme persistence. Google Firebase Analytics is initialized ONLY if you explicitly give consent. You can modify or revoke your preferences at any time via the "Cookie settings" link in the footer.'}
+                </p>
+              </div>
+
+              {/* 6. No Ads & No Selling Data */}
+              <div className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 space-y-2">
+                <h4 className="font-bold text-neutral-900 dark:text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-neutral-500" />
+                  <span>6. {isAr ? 'انعدام الإعلانات وعدم بيع البيانات نهائياً' : 'Zero Ads & No Selling of Data'}</span>
                 </h4>
                 <p className="text-neutral-600 dark:text-neutral-400">
                   {isAr
@@ -170,11 +183,11 @@ export const LegalModal: React.FC<LegalModalProps> = ({
                 </p>
               </div>
 
-              {/* 6. Request Deletion */}
+              {/* 7. Request Deletion */}
               <div className="p-4 rounded-2xl bg-neutral-100 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-800 space-y-2">
                 <h4 className="font-bold text-neutral-900 dark:text-white flex items-center gap-2">
                   <Mail className="w-4 h-4 text-neutral-500" />
-                  <span>6. {isAr ? 'طلب حذف البيانات بالكامل' : 'Right to Erasure & Data Deletion'}</span>
+                  <span>7. {isAr ? 'طلب حذف البيانات بالكامل' : 'Right to Erasure & Data Deletion'}</span>
                 </h4>
                 <p className="text-neutral-600 dark:text-neutral-400">
                   {isAr

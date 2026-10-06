@@ -7,11 +7,14 @@ import {
   ArrowUpRight,
   ShieldCheck,
   MessageSquare,
+  QrCode,
 } from 'lucide-react';
 import { Language } from '../types';
 import { TRANSLATIONS } from '../data/translations';
 import { SOCIAL_LINKS, SERVICES_DATA } from '../data/apps';
 import { companyImages } from '../data/companyImages';
+import { siteContent } from '../data/siteContent';
+import { generateQrSvg } from '../utils/qrCode';
 import { SocialSection } from './SocialSection';
 import { useAuth } from '../context/AuthContext';
 
@@ -208,6 +211,32 @@ export const ContactSection: React.FC<ContactSectionProps> = ({
                 ? 'جميع الاتفاقيات تشمل مواصفات فنية واضحة، فترات تجريبية، ودعماً تقنياً مباشراً لضمان تشغيل سلس وناجح.'
                 : 'Every deployment includes strict technical SLAs, complete staging tests, and direct technical consultation to ensure seamless operation.'}
             </div>
+
+            {/* Client-side Site URL QR Code */}
+            {siteContent.siteUrl && (
+              <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 shadow-xs flex items-center gap-4">
+                <div
+                  className="w-20 h-20 p-1.5 rounded-xl bg-white text-black shrink-0 border border-neutral-200 flex items-center justify-center"
+                  dangerouslySetInnerHTML={{
+                    __html: generateQrSvg(siteContent.siteUrl, 72),
+                  }}
+                />
+                <div className="space-y-1 text-xs">
+                  <div className="font-bold text-neutral-900 dark:text-white flex items-center gap-1.5">
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'رمز QR السريع للموقع' : 'Site URL QR Code'}</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-500 leading-relaxed">
+                    {isAr
+                      ? 'امسح الرمز بكاميرا هاتفك لفتح الموقع ومشاركته فوراً.'
+                      : 'Scan with your phone to open and share Arixon instantly.'}
+                  </p>
+                  <span className="text-[10px] font-mono text-neutral-400 block truncate max-w-[180px]">
+                    {siteContent.siteUrl}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right Column: Contact Form (Strict Monochrome) */}

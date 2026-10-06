@@ -9,37 +9,56 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() &&
-        (request.auth.token.email == "omarsharrabx99@gmail.com" ||
-         request.auth.token.email == "omarkingx99@gmail.com" ||
-         request.auth.token.email == "omarkingx@gmail.com");
+        request.auth.token.email != null &&
+        (request.auth.token.email.lower() == "omarkingx99@gmail.com" ||
+         request.auth.token.email.lower() == "omarkingx@gmail.com" ||
+         request.auth.token.email.lower() == "omarsharrabx99@gmail.com" ||
+         request.auth.token.email.lower() == "mark99@gmail.com");
     }
 
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // 1. Users collection: each user can only read/write their own profile doc
+    function isNotBlocked(userId) {
+      return !exists(/databases/$(database)/documents/users/$(userId)) ||
+             get(/databases/$(database)/documents/users/$(userId)).data.get('blocked', false) == false;
+    }
+
+    // 1. users/{uid}: User profile documents
     match /users/{userId} {
+      // User can only read their own profile; Admin can read all
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) || isAdmin();
-      allow update: if isOwner(userId) || isAdmin();
+
+      // User can create their own doc upon signup, but cannot mark themselves as admin or blocked
+      allow create: if (isOwner(userId) &&
+        (!request.resource.data.keys().hasAny(['blocked', 'adminNote']) ||
+         request.resource.data.get('blocked', false) == false)) || isAdmin();
+
+      // User can update their own data, but NEVER touch 'blocked' or 'adminNote' fields
+      allow update: if (isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['blocked', 'adminNote'])) || isAdmin();
+
+      // Only Admin can delete user records
       allow delete: if isAdmin();
     }
 
-    // 2. Conversations collection: each user can only read/write their own conversation
+    // 2. conversations/{uid} and subcollection messages/{id}
     match /conversations/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create, update: if isOwner(userId) || isAdmin();
+      // Blocked users cannot initiate or update conversations
+      allow create, update: if (isOwner(userId) && isNotBlocked(userId)) || isAdmin();
       allow delete: if isAdmin();
 
-      // Messages subcollection: strict sender validation
       match /messages/{messageId} {
         allow read: if isOwner(userId) || isAdmin();
 
+        // Regular users can only send messages as themselves if they are not blocked
         allow create: if (
-          // Regular user can only send as their own uid with senderRole == 'user'
-          (isOwner(userId) && request.resource.data.senderId == request.auth.uid && request.resource.data.senderRole == 'user') ||
-          // Admin can send as 'admin'
+          (isOwner(userId) &&
+           isNotBlocked(userId) &&
+           request.resource.data.senderId == request.auth.uid &&
+           request.resource.data.senderRole == 'user') ||
           (isAdmin() && request.resource.data.senderRole == 'admin')
         );
 
@@ -47,22 +66,55 @@ service cloud.firestore {
       }
     }
 
-    // 3. Project Requests collection
+    // 3. projectRequests/{id}
     match /projectRequests/{requestId} {
       // User can read their own request; Admin can read all
       allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
-      // Authenticated users can create requests with their own uid
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      // Only Admin can update status or delete
+
+      // Authenticated, non-blocked users can submit project requests tied to their uid
+      allow create: if isAuthenticated() &&
+                      isNotBlocked(request.auth.uid) &&
+                      request.resource.data.userId == request.auth.uid;
+
+      // Only Admin can change status, edit admin notes, or delete requests
       allow update, delete: if isAdmin();
     }
 
-    // 4. Updates collection: Official company announcements
+    // 4. updates/{id}: Official releases shown in public "Latest Updates"
     match /updates/{updateId} {
       // Public read for website visitors
       allow read: if true;
-      // Only Admin can publish, update or delete
+
+      // Only Admin can publish, update or delete releases
       allow create, update, delete: if isAdmin();
+    }
+
+    // 5. adminState/{docId}: Internal administrative metadata (lastSeenNotificationsAt)
+    match /adminState/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    // 6. settings/{docId}: Announcement and general site settings
+    match /settings/{docId} {
+      // Public read for live announcements and system banner
+      allow read: if true;
+      // Only Admin can configure or modify settings
+      allow write: if isAdmin();
+    }
+
+    // 7. supportTickets/{ticketId}: Client technical support tickets
+    match /supportTickets/{ticketId} {
+      // User can read their own ticket; Admin can read all
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+
+      // Authenticated non-blocked users can submit support tickets for themselves
+      allow create: if isAuthenticated() &&
+                      isNotBlocked(request.auth.uid) &&
+                      request.resource.data.userId == request.auth.uid &&
+                      request.resource.data.status == "open";
+
+      // Only Admin can update status, write notes, or delete tickets
+      allow update, delete: if isAdmin();
     }
   }
 }

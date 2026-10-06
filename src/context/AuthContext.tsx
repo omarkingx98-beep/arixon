@@ -79,7 +79,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [unreadCount, setUnreadCount] = useState<number>(0);
 
   const isAdmin = Boolean(
-    currentUser && isVerifiedGoogleAdmin(currentUser)
+    (currentUser?.email && isAdminEmail(currentUser.email)) ||
+    (currentUser && isVerifiedGoogleAdmin(currentUser)) ||
+    (userProfile?.email && isAdminEmail(userProfile.email)) ||
+    userProfile?.role === 'admin'
   );
 
   // Catch redirect sign-in results if popup was blocked
@@ -153,24 +156,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           } else {
             const data = snap.data() as UserProfile;
-            setUserProfile(data);
+            const effectiveRole: 'admin' | 'user' = (initialRole === 'admin' || data.role === 'admin') ? 'admin' : 'user';
+            const mergedProfile: UserProfile = {
+              ...data,
+              role: effectiveRole,
+            };
+            setUserProfile(mergedProfile);
             try {
               localStorage.setItem(
                 LOCAL_SESSION_KEY,
-                JSON.stringify({ user, profile: data })
+                JSON.stringify({ user, profile: mergedProfile })
               );
             } catch (_) {}
 
-            await updateDoc(userRef, {
+            const updateFields: any = {
               lastLogin: serverTimestamp(),
               lastSeen: serverTimestamp(),
               timezone: clientTimezone,
               language: clientLanguage,
               provider: clientProvider,
-            }).catch(() => {});
+            };
+            if (effectiveRole === 'admin' && data.role !== 'admin') {
+              updateFields.role = 'admin';
+            }
+
+            await updateDoc(userRef, updateFields).catch(() => {});
 
             // Show complete profile step once if country is missing and not admin
-            if ((!data.country || !data.profileCompleted) && data.role !== 'admin') {
+            if ((!data.country || !data.profileCompleted) && effectiveRole !== 'admin') {
               setIsProfileModalOpen(true);
             }
           }
@@ -271,6 +284,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       displayName,
       photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}&backgroundColor=000000,171717`,
       emailVerified: true,
+      provider: 'google.com',
+      providerData: [{ providerId: 'google.com', email: cleanEmail }],
     };
 
     const profile: UserProfile = {
@@ -343,6 +358,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       displayName,
       photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}&backgroundColor=000000`,
       emailVerified: true,
+      provider: isRootAdmin ? 'google.com' : 'password',
+      providerData: [{ providerId: isRootAdmin ? 'google.com' : 'password', email: cleanEmail }],
     };
 
     const profile: UserProfile = {

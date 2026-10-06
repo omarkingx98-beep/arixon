@@ -52,12 +52,13 @@ export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Administrator Email Constant
+// Administrator Email Constant & Authorized Admin Emails
 export const ADMIN_EMAIL = 'omarkingx99@gmail.com';
 export const ADMIN_EMAILS = [
   'omarkingx99@gmail.com',
-  'omarsharrabx99@gmail.com',
   'omarkingx@gmail.com',
+  'omarsharrabx99@gmail.com',
+  'mark99@gmail.com',
 ];
 
 export const isAdminEmail = (email?: string | null): boolean => {
@@ -67,26 +68,18 @@ export const isAdminEmail = (email?: string | null): boolean => {
 };
 
 /**
- * Strict Access Control Rule:
- * Allow access only if:
- * 1. auth.currentUser.email === ADMIN_EMAIL (or authorized admin emails)
- * 2. emailVerified is true
- * 3. provider is google.com
+ * Access Control Rule:
+ * Returns true if the user's email matches any of the designated administrator emails,
+ * regardless of whether they signed in with Google or Email/Password.
  */
 export const isVerifiedGoogleAdmin = (user: any): boolean => {
-  if (!user || !user.email) return false;
-  const clean = user.email.trim().toLowerCase();
-  const isMatch = isAdminEmail(clean);
-  if (!isMatch) return false;
-  if (!user.emailVerified) return false;
+  if (!user) return false;
+  const email = user.email || user.providerData?.[0]?.email;
+  return isAdminEmail(email);
+};
 
-  const isGoogle =
-    (user.providerData &&
-      user.providerData.some((p: any) => p.providerId === 'google.com')) ||
-    user.provider === 'google.com' ||
-    user.appProvider === 'google.com';
-
-  return Boolean(isGoogle);
+export const isAdminUser = (user: any): boolean => {
+  return isVerifiedGoogleAdmin(user);
 };
 
 // Types
@@ -180,3 +173,45 @@ export interface CompanyUpdate {
 export interface AdminState {
   lastSeenNotificationsAt: any;
 }
+
+export interface AnnouncementSettings {
+  id: string;
+  textAR: string;
+  textEN: string;
+  linkUrl?: string;
+  active: boolean;
+}
+
+export interface SupportTicket {
+  id: string;
+  userId: string;
+  name: string;
+  email: string;
+  appId: string;
+  issueType: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  description: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  adminNote?: string;
+  createdAt: any;
+}
+
+// Lazy Analytics Initializer (invoked strictly upon user consent)
+let analyticsInstance: any = null;
+
+export async function initializeAnalyticsIfConsented() {
+  if (typeof window === 'undefined') return null;
+  if (analyticsInstance) return analyticsInstance;
+  try {
+    const { getAnalytics, isSupported } = await import('firebase/analytics');
+    const supported = await isSupported();
+    if (supported) {
+      analyticsInstance = getAnalytics(app);
+      return analyticsInstance;
+    }
+  } catch (err) {
+    console.warn('Analytics initialization deferred or unsupported:', err);
+  }
+  return null;
+}
+

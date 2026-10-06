@@ -72,6 +72,10 @@ export const Hero: React.FC<HeroProps> = ({
           <img
             src={lightImage.url}
             alt={isAr ? lightImage.title.ar : lightImage.title.en}
+            fetchPriority="high"
+            decoding="async"
+            width={1920}
+            height={1080}
             className="w-full h-full object-cover transition-transform duration-1000 scale-105"
             style={{
               animation: 'subtleHeroZoom 25s ease-in-out infinite alternate',
@@ -87,6 +91,10 @@ export const Hero: React.FC<HeroProps> = ({
           <img
             src={darkImage.url}
             alt={isAr ? darkImage.title.ar : darkImage.title.en}
+            fetchPriority="high"
+            decoding="async"
+            width={1920}
+            height={1080}
             className="w-full h-full object-cover transition-transform duration-1000 scale-105"
             style={{
               animation: 'subtleHeroZoom 25s ease-in-out infinite alternate',

@@ -136,7 +136,7 @@ export const ProfileCompletionModal: React.FC<ProfileCompletionModalProps> = ({
       const parsedAge = age ? parseInt(age, 10) : undefined;
 
       const updatePayload: Partial<UserProfile> = {
-        name: cleanName || currentUser.displayName || 'User',
+        name: cleanName || currentUser?.displayName || 'User',
         country: isAr ? selectedCountry.nameAr : selectedCountry.nameEn,
         countryCode: selectedCountry.code,
         countryFlag: selectedCountry.flag,

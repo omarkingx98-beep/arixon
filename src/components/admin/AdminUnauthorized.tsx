@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ShieldAlert, LogIn, ArrowLeft, ArrowRight, Loader2 } from 'lucide-react';
 import { signInWithPopup, signInWithRedirect } from 'firebase/auth';
-import { auth, googleProvider, ADMIN_EMAIL } from '../../firebase/config';
+import { auth, googleProvider, ADMIN_EMAILS } from '../../firebase/config';
 import { Language } from '../../types';
 import { EriksonLogo } from '../EriksonLogo';
 
@@ -70,7 +70,9 @@ export const AdminUnauthorized: React.FC<AdminUnauthorizedProps> = ({
               {currentUserEmail}
             </div>
             <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
-              {isAr ? `المطلوب: ${ADMIN_EMAIL}` : `Required: ${ADMIN_EMAIL}`}
+              {isAr
+                ? `الحسابات المصرح لها: ${ADMIN_EMAILS.join(' أو ')}`
+                : `Authorized emails: ${ADMIN_EMAILS.join(', ')}`}
             </div>
           </div>
         ) : (

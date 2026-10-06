@@ -1,33 +1,23 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  Shield,
+  LayoutDashboard,
   Users,
   MessageSquare,
-  AlertTriangle,
+  FileSpreadsheet,
+  Sparkles,
+  Settings,
+  Bell,
+  LogOut,
   ArrowLeft,
   ArrowRight,
-  Search,
-  Send,
-  Phone,
-  Mail,
-  Calendar,
-  Globe2,
-  CheckCheck,
+  Shield,
+  Volume2,
+  VolumeX,
   Clock,
-  Loader2,
-  ExternalLink,
-  MessageCircle,
-  RefreshCw,
-  Inbox,
-  Bell,
-  Trash2,
-  Plus,
-  Filter,
-  CheckCircle2,
-  DollarSign,
-  Tag,
-  Sparkles,
+  Menu,
   X,
+  ExternalLink,
+  LifeBuoy,
 } from 'lucide-react';
 import {
   collection,
@@ -35,85 +25,168 @@ import {
   orderBy,
   onSnapshot,
   doc,
-  addDoc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
   serverTimestamp,
-  increment,
-  getDocs,
-  limit,
 } from 'firebase/firestore';
 import {
   db,
-  ADMIN_EMAIL,
-  Conversation,
-  ChatMessage,
+  isVerifiedGoogleAdmin,
   UserProfile,
+  Conversation,
   ProjectRequest,
   CompanyUpdate,
+  SupportTicket,
 } from '../firebase/config';
 import { useAuth } from '../context/AuthContext';
 import { Language } from '../types';
 import { EriksonLogo } from './EriksonLogo';
+
+// Modular Admin Components
+import { AdminUnauthorized } from './admin/AdminUnauthorized';
+import { AdminInactivityWarning } from './admin/AdminInactivityWarning';
+import { AdminOverviewSection } from './admin/AdminOverviewSection';
+import { AdminUsersSection } from './admin/AdminUsersSection';
+import { AdminMessagesSection } from './admin/AdminMessagesSection';
+import { AdminRequestsSection } from './admin/AdminRequestsSection';
+import { AdminTicketsSection } from './admin/AdminTicketsSection';
+import { AdminUpdatesSection } from './admin/AdminUpdatesSection';
+import { AdminNotificationsModal, AdminNotificationItem } from './admin/AdminNotificationsModal';
+import { AdminSettingsSection } from './admin/AdminSettingsSection';
 
 interface AdminDashboardProps {
   language: Language;
   onClose: () => void;
 }
 
-type AdminTab = 'requests' | 'updates' | 'conversations' | 'users';
+type AdminTab = 'overview' | 'users' | 'messages' | 'requests' | 'tickets' | 'updates' | 'settings';
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ language, onClose }) => {
-  const { currentUser, isAdmin } = useAuth();
+  const { currentUser, logout, isAdmin, userProfile } = useAuth();
   const isAr = language === 'ar';
 
-  const [activeTab, setActiveTab] = useState<AdminTab>('requests');
+  // 1. ACCESS CONTROL CHECK
+  const isAuthorized = Boolean(
+    isAdmin ||
+    (currentUser && isVerifiedGoogleAdmin(currentUser)) ||
+    (userProfile?.role === 'admin')
+  );
 
-  // --- Requests State ---
-  const [requests, setRequests] = useState<ProjectRequest[]>([]);
-  const [loadingRequests, setLoadingRequests] = useState<boolean>(true);
-  const [requestStatusFilter, setRequestStatusFilter] = useState<'all' | 'new' | 'in_progress' | 'done'>('all');
-  const [requestSearchQuery, setRequestSearchQuery] = useState<string>('');
-  const [selectedRequest, setSelectedRequest] = useState<ProjectRequest | null>(null);
+  // If not authorized, return early with zero Firestore listeners attached!
+  if (!isAuthorized) {
+    return (
+      <AdminUnauthorized
+        language={language}
+        currentUserEmail={currentUser?.email}
+        onGoHome={onClose}
+        onSignOut={logout}
+      />
+    );
+  }
 
-  // --- Updates State ---
-  const [updatesList, setUpdatesList] = useState<CompanyUpdate[]>([]);
-  const [loadingUpdates, setLoadingUpdates] = useState<boolean>(true);
-  const [updateTitleAR, setUpdateTitleAR] = useState<string>('');
-  const [updateTitleEN, setUpdateTitleEN] = useState<string>('');
-  const [updateBodyAR, setUpdateBodyAR] = useState<string>('');
-  const [updateBodyEN, setUpdateBodyEN] = useState<string>('');
-  const [publishingUpdate, setPublishingUpdate] = useState<boolean>(false);
-  const [updatePublishError, setUpdatePublishError] = useState<string | null>(null);
+  // --- STATE FOR AUTHORIZED ADMIN ---
+  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [selectedUserIdForChat, setSelectedUserIdForChat] = useState<string | null>(null);
+  const [selectedRequestForDetail, setSelectedRequestForDetail] = useState<ProjectRequest | null>(null);
 
-  // --- Conversations State ---
+  // Firestore Data State
+  const [users, setUsers] = useState<UserProfile[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [loadingConversations, setLoadingConversations] = useState<boolean>(true);
-  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [loadingChat, setLoadingChat] = useState<boolean>(false);
-  const [adminReplyText, setAdminReplyText] = useState<string>('');
-  const [sendingReply, setSendingReply] = useState<boolean>(false);
+  const [requests, setRequests] = useState<ProjectRequest[]>([]);
+  const [updates, setUpdates] = useState<CompanyUpdate[]>([]);
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [lastSeenNotificationsAt, setLastSeenNotificationsAt] = useState<any>(null);
 
-  // --- Users State ---
-  const [usersList, setUsersList] = useState<UserProfile[]>([]);
-  const [loadingUsers, setLoadingUsers] = useState<boolean>(false);
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  // Inactivity State (30 mins = 1800000 ms, 1 min warning = 60000 ms)
+  const [showInactivityWarning, setShowInactivityWarning] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState(60);
+  const lastActivityRef = useRef<number>(Date.now());
 
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  // Sound & Notifications
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('arixon_admin_sound') !== 'false';
+    } catch (_) {
+      return true;
+    }
+  });
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // 1. Fetch Project Requests in Real Time
+  // Mobile drawer
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // --- 2. FIRESTORE REAL-TIME LISTENERS (ATTACHED ONLY FOR AUTHORIZED ADMIN) ---
   useEffect(() => {
-    if (!isAdmin) return;
-    setLoadingRequests(true);
-    const q = query(collection(db, 'projectRequests'), orderBy('createdAt', 'desc'));
+    // Users Listener
+    const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+    const unsubUsers = onSnapshot(
+      qUsers,
+      (snap) => {
+        const list: UserProfile[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          list.push({
+            uid: d.id,
+            name: data.name || '',
+            username: data.username || '',
+            email: data.email || '',
+            photoURL: data.photoURL,
+            provider: data.provider || 'google.com',
+            country: data.country || '',
+            countryCode: data.countryCode || '',
+            countryFlag: data.countryFlag || '',
+            timezone: data.timezone || 'UTC',
+            language: data.language || 'en',
+            role: data.role || 'user',
+            blocked: Boolean(data.blocked),
+            adminNote: data.adminNote || '',
+            createdAt: data.createdAt,
+            lastLogin: data.lastLogin,
+            lastSeen: data.lastSeen,
+            profileCompleted: Boolean(data.profileCompleted),
+            phone: data.phone,
+            fullPhone: data.fullPhone,
+          });
+        });
+        setUsers(list);
+      },
+      (err) => console.warn('Users listener:', err)
+    );
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+    // Conversations Listener
+    const qConv = query(collection(db, 'conversations'), orderBy('updatedAt', 'desc'));
+    const unsubConv = onSnapshot(
+      qConv,
+      (snap) => {
+        const list: Conversation[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          list.push({
+            id: d.id,
+            userId: data.userId || d.id,
+            userName: data.userName || '',
+            userUsername: data.userUsername || '',
+            userEmail: data.userEmail || '',
+            userPhoto: data.userPhoto,
+            userPhone: data.userPhone,
+            userCountry: data.userCountry,
+            lastMessage: data.lastMessage || '',
+            updatedAt: data.updatedAt,
+            unreadByAdmin: data.unreadByAdmin || 0,
+            unreadByUser: data.unreadByUser || 0,
+          });
+        });
+        setConversations(list);
+      },
+      (err) => console.warn('Conversations listener:', err)
+    );
+
+    // Project Requests Listener
+    const qReq = query(collection(db, 'projectRequests'), orderBy('createdAt', 'desc'));
+    const unsubReq = onSnapshot(
+      qReq,
+      (snap) => {
         const list: ProjectRequest[] = [];
-        snapshot.forEach((d) => {
+        snap.forEach((d) => {
           const data = d.data();
           list.push({
             id: d.id,
@@ -126,32 +199,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ language, onClos
             timeline: data.timeline || 'Flexible',
             description: data.description || '',
             status: data.status || 'new',
+            adminNote: data.adminNote || '',
             createdAt: data.createdAt,
           });
         });
         setRequests(list);
-        setLoadingRequests(false);
       },
-      (err) => {
-        console.error('Error fetching projectRequests:', err);
-        setLoadingRequests(false);
-      }
+      (err) => console.warn('Requests listener:', err)
     );
 
-    return () => unsubscribe();
-  }, [isAdmin]);
-
-  // 2. Fetch Updates in Real Time
-  useEffect(() => {
-    if (!isAdmin) return;
-    setLoadingUpdates(true);
-    const q = query(collection(db, 'updates'), orderBy('createdAt', 'desc'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+    // Updates Listener
+    const qUpdates = query(collection(db, 'updates'), orderBy('createdAt', 'desc'));
+    const unsubUpdates = onSnapshot(
+      qUpdates,
+      (snap) => {
         const list: CompanyUpdate[] = [];
-        snapshot.forEach((d) => {
+        snap.forEach((d) => {
           const data = d.data();
           list.push({
             id: d.id,
@@ -162,1069 +225,651 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ language, onClos
             createdAt: data.createdAt,
           });
         });
-        setUpdatesList(list);
-        setLoadingUpdates(false);
+        setUpdates(list);
       },
-      (err) => {
-        console.error('Error fetching updates:', err);
-        setLoadingUpdates(false);
-      }
+      (err) => console.warn('Updates listener:', err)
     );
 
-    return () => unsubscribe();
-  }, [isAdmin]);
-
-  // 3. Fetch Conversations in Real Time
-  useEffect(() => {
-    if (!isAdmin) return;
-
-    setLoadingConversations(true);
-    const convQuery = query(collection(db, 'conversations'), orderBy('updatedAt', 'desc'));
-
-    const unsubscribe = onSnapshot(
-      convQuery,
-      (snapshot) => {
-        const list: Conversation[] = [];
-        snapshot.forEach((d) => {
-          const data = d.data();
-          list.push({
-            id: d.id,
-            userId: data.userId || d.id,
-            userName: data.userName || 'User',
-            userUsername: data.userUsername || '',
-            userEmail: data.userEmail || '',
-            userPhoto: data.userPhoto || '',
-            userPhone: data.userPhone || '',
-            userCountry: data.userCountry || '',
-            userCountryFlag: data.userCountryFlag || '🌍',
-            userAge: data.userAge,
-            lastMessage: data.lastMessage || '',
-            updatedAt: data.updatedAt,
-            unreadByAdmin: data.unreadByAdmin || 0,
-            unreadByUser: data.unreadByUser || 0,
-          });
+    // Support Tickets Listener
+    const qTickets = query(collection(db, 'supportTickets'), orderBy('createdAt', 'desc'));
+    const unsubTickets = onSnapshot(
+      qTickets,
+      (snap) => {
+        const list: SupportTicket[] = [];
+        snap.forEach((d) => {
+          list.push({ id: d.id, ...(d.data() as any) });
         });
-        setConversations(list);
-        setLoadingConversations(false);
+        setTickets(list);
+      },
+      (err) => console.warn('Tickets listener:', err)
+    );
 
-        if (selectedConversation) {
-          const current = list.find((c) => c.userId === selectedConversation.userId);
-          if (current) setSelectedConversation(current);
+    // AdminState Listener (lastSeenNotificationsAt)
+    const unsubAdminState = onSnapshot(
+      doc(db, 'adminState', 'main'),
+      (snap) => {
+        if (snap.exists()) {
+          setLastSeenNotificationsAt(snap.data()?.lastSeenNotificationsAt);
         }
       },
-      (err) => {
-        console.error('Error fetching conversations:', err);
-        setLoadingConversations(false);
-      }
+      (err) => console.warn('AdminState listener:', err)
     );
 
-    return () => unsubscribe();
-  }, [isAdmin]);
+    return () => {
+      unsubUsers();
+      unsubConv();
+      unsubReq();
+      unsubUpdates();
+      unsubTickets();
+      unsubAdminState();
+    };
+  }, []);
 
-  // 4. Fetch Users on tab switch
+  // --- 3. INACTIVITY TIMER (30 MINS WITH 1 MIN WARNING) ---
   useEffect(() => {
-    if (!isAdmin || activeTab !== 'users') return;
-
-    const fetchUsers = async () => {
-      setLoadingUsers(true);
-      try {
-        const uQuery = query(collection(db, 'users'), orderBy('createdAt', 'desc'), limit(150));
-        const snap = await getDocs(uQuery);
-        const users: UserProfile[] = [];
-        snap.forEach((d) => {
-          users.push(d.data() as UserProfile);
-        });
-        setUsersList(users);
-      } catch (err) {
-        console.error('Error fetching users:', err);
-      } finally {
-        setLoadingUsers(false);
+    const handleActivity = () => {
+      lastActivityRef.current = Date.now();
+      if (showInactivityWarning) {
+        setShowInactivityWarning(false);
       }
     };
 
-    fetchUsers();
-  }, [isAdmin, activeTab]);
+    window.addEventListener('mousemove', handleActivity);
+    window.addEventListener('mousedown', handleActivity);
+    window.addEventListener('keydown', handleActivity);
+    window.addEventListener('touchstart', handleActivity);
+    window.addEventListener('scroll', handleActivity);
 
-  // 5. Fetch Messages for selected conversation
-  useEffect(() => {
-    if (!selectedConversation) {
-      setChatMessages([]);
-      return;
-    }
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - lastActivityRef.current;
+      const thirtyMinutes = 30 * 60 * 1000;
+      const twentyNineMinutes = 29 * 60 * 1000;
 
-    setLoadingChat(true);
-    const msgQuery = query(
-      collection(db, 'conversations', selectedConversation.userId, 'messages'),
-      orderBy('createdAt', 'asc')
-    );
+      if (elapsed >= thirtyMinutes) {
+        // Auto sign-out
+        clearInterval(interval);
+        logout();
+        onClose();
+      } else if (elapsed >= twentyNineMinutes) {
+        const remaining = Math.max(0, Math.ceil((thirtyMinutes - elapsed) / 1000));
+        setSecondsRemaining(remaining);
+        setShowInactivityWarning(true);
+      } else {
+        setShowInactivityWarning(false);
+      }
+    }, 1000);
 
-    const unsubscribe = onSnapshot(
-      msgQuery,
-      (snapshot) => {
-        const msgs: ChatMessage[] = [];
-        snapshot.forEach((d) => {
-          const data = d.data();
-          msgs.push({
-            id: d.id,
-            text: data.text || '',
-            senderId: data.senderId || '',
-            senderRole: data.senderRole || 'user',
-            senderName: data.senderName || '',
-            createdAt: data.createdAt,
-          });
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('mousemove', handleActivity);
+      window.removeEventListener('mousedown', handleActivity);
+      window.removeEventListener('keydown', handleActivity);
+      window.removeEventListener('touchstart', handleActivity);
+      window.removeEventListener('scroll', handleActivity);
+    };
+  }, [showInactivityWarning, logout, onClose]);
+
+  // --- 4. AUDIO CHIME (SYNTHESIZED WEB AUDIO) ---
+  const playChime = () => {
+    if (!soundEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.4);
+    } catch (_) {}
+  };
+
+  const handleToggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    try {
+      localStorage.setItem('arixon_admin_sound', String(next));
+    } catch (_) {}
+    if (next) playChime();
+  };
+
+  // --- 5. NOTIFICATIONS FEED & BADGES ---
+  const toMillis = (val: any): number => {
+    if (!val) return 0;
+    if (typeof val === 'number') return val;
+    if (val.toMillis) return val.toMillis();
+    if (val.seconds) return val.seconds * 1000;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  };
+
+  const notificationsFeed = useMemo((): AdminNotificationItem[] => {
+    const items: AdminNotificationItem[] = [];
+
+    // New Users
+    users.slice(0, 10).forEach((u) => {
+      items.push({
+        id: `user_${u.uid}`,
+        type: 'user',
+        title: isAr ? `مستخدم جديد: ${u.name || 'Anonymous'}` : `New user: ${u.name || 'Anonymous'}`,
+        desc: `${u.email} · ${u.country || 'Unknown'}`,
+        timestamp: u.createdAt,
+        targetId: u.uid,
+      });
+    });
+
+    // Unread or recent messages
+    conversations.forEach((c) => {
+      if ((c.unreadByAdmin || 0) > 0) {
+        items.push({
+          id: `msg_${c.userId}`,
+          type: 'message',
+          title: isAr ? `رسالة جديدة من: ${c.userName}` : `New message from: ${c.userName}`,
+          desc: c.lastMessage || '...',
+          timestamp: c.updatedAt,
+          targetId: c.userId,
         });
-        setChatMessages(msgs);
-        setLoadingChat(false);
-
-        // Mark as read by admin
-        if (selectedConversation.unreadByAdmin > 0) {
-          updateDoc(doc(db, 'conversations', selectedConversation.userId), {
-            unreadByAdmin: 0,
-          }).catch(console.error);
-        }
-      },
-      (err) => {
-        console.error('Error fetching chat messages:', err);
-        setLoadingChat(false);
       }
-    );
+    });
 
-    return () => unsubscribe();
-  }, [selectedConversation]);
+    // New Requests
+    requests.forEach((r) => {
+      if (r.status === 'new') {
+        items.push({
+          id: `req_${r.id}`,
+          type: 'request',
+          title: isAr ? `طلب مشروع جديد: ${r.appType}` : `New request: ${r.appType}`,
+          desc: `${r.name} · ${r.budgetRange}`,
+          timestamp: r.createdAt,
+          targetId: r.id,
+        });
+      }
+    });
 
-  // Auto scroll chat to bottom
+    // Support Tickets (Open or In Progress)
+    tickets.forEach((t) => {
+      if (t.status === 'open') {
+        items.push({
+          id: `ticket_${t.id}`,
+          type: 'ticket',
+          title: isAr ? `تذكرة دعم فني جديدة: ${t.appId}` : `New support ticket: ${t.appId}`,
+          desc: `${t.name}: ${t.description.slice(0, 70)}...`,
+          timestamp: t.createdAt,
+          targetId: t.id,
+        });
+      }
+    });
+
+    return items.sort((a, b) => toMillis(b.timestamp) - toMillis(a.timestamp));
+  }, [users, conversations, requests, tickets, isAr]);
+
+  const lastSeenMs = toMillis(lastSeenNotificationsAt);
+  const unreadNotificationsCount = useMemo(() => {
+    if (!lastSeenMs) return notificationsFeed.length;
+    return notificationsFeed.filter((n) => toMillis(n.timestamp) > lastSeenMs).length;
+  }, [notificationsFeed, lastSeenMs]);
+
+  const totalUnreadMessages = conversations.reduce((acc, c) => acc + (c.unreadByAdmin || 0), 0);
+  const totalNewRequests = requests.filter((r) => r.status === 'new').length;
+  const totalOpenTickets = tickets.filter((t) => t.status === 'open').length;
+
+  // Sync document.title badge e.g. "(3) Arixon Admin"
   useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [chatMessages, loadingChat]);
+    const totalBadges =
+      unreadNotificationsCount +
+      totalUnreadMessages +
+      totalNewRequests +
+      totalOpenTickets;
 
-  // --- Handlers ---
-  const handleUpdateStatus = async (requestId: string, newStatus: 'new' | 'in_progress' | 'done') => {
-    try {
-      await updateDoc(doc(db, 'projectRequests', requestId), {
-        status: newStatus,
-      });
-      if (selectedRequest && selectedRequest.id === requestId) {
-        setSelectedRequest((prev) => (prev ? { ...prev, status: newStatus } : null));
+    const baseTitle = isAr ? 'لوحة تحكم إدارة اريكسون' : 'Arixon Executive Dashboard';
+    if (totalBadges > 0) {
+      document.title = `(${totalBadges}) ${baseTitle}`;
+    } else {
+      document.title = baseTitle;
+    }
+  }, [unreadNotificationsCount, totalUnreadMessages, totalNewRequests, totalOpenTickets, isAr]);
+
+  // Desktop Browser Notification API permission request
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
       }
-    } catch (err) {
-      console.error('Error updating request status:', err);
     }
-  };
-
-  const handlePublishUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!updateTitleAR.trim() || !updateTitleEN.trim() || !updateBodyAR.trim() || !updateBodyEN.trim()) {
-      setUpdatePublishError(
-        isAr ? 'يرجى ملء جميع الحقول باللغتين العربية والإنجليزية.' : 'Please fill in all bilingual fields.'
-      );
-      return;
-    }
-
-    setUpdatePublishError(null);
-    setPublishingUpdate(true);
-    try {
-      await addDoc(collection(db, 'updates'), {
-        titleAR: updateTitleAR.trim(),
-        titleEN: updateTitleEN.trim(),
-        bodyAR: updateBodyAR.trim(),
-        bodyEN: updateBodyEN.trim(),
-        createdAt: serverTimestamp(),
-      });
-      setUpdateTitleAR('');
-      setUpdateTitleEN('');
-      setUpdateBodyAR('');
-      setUpdateBodyEN('');
-    } catch (err: any) {
-      console.error('Error publishing update:', err);
-      setUpdatePublishError(err.message || 'Error publishing update');
-    } finally {
-      setPublishingUpdate(false);
-    }
-  };
-
-  const handleDeleteUpdate = async (updateId: string) => {
-    if (!window.confirm(isAr ? 'هل أنت متأكد من حذف هذا التحديث؟' : 'Are you sure you want to delete this update?')) {
-      return;
-    }
-    try {
-      await deleteDoc(doc(db, 'updates', updateId));
-    } catch (err) {
-      console.error('Error deleting update:', err);
-    }
-  };
-
-  const handleSendAdminReply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedConversation || !adminReplyText.trim() || sendingReply) return;
-
-    const reply = adminReplyText.trim();
-    setSendingReply(true);
-
-    try {
-      const convRef = doc(db, 'conversations', selectedConversation.userId);
-      const messagesRef = collection(db, 'conversations', selectedConversation.userId, 'messages');
-
-      await addDoc(messagesRef, {
-        text: reply,
-        senderId: currentUser?.uid || 'admin',
-        senderRole: 'admin',
-        senderName: currentUser?.displayName || 'Omar Shurrab (Admin)',
-        createdAt: serverTimestamp(),
-      });
-
-      await updateDoc(convRef, {
-        lastMessage: reply,
-        updatedAt: serverTimestamp(),
-        unreadByUser: increment(1),
-      });
-
-      setAdminReplyText('');
-    } catch (err) {
-      console.error('Error sending admin reply:', err);
-    } finally {
-      setSendingReply(false);
-    }
-  };
-
-  const formatDate = (ts: any) => {
-    if (!ts) return '';
-    try {
-      const d = ts.toDate ? ts.toDate() : new Date(ts);
-      return d.toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-    } catch {
-      return '';
-    }
-  };
-
-  const formatTime = (ts: any) => {
-    if (!ts) return '';
-    try {
-      const d = ts.toDate ? ts.toDate() : new Date(ts);
-      return d.toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return '';
-    }
-  };
-
-  if (!isAdmin) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm text-white">
-        <div className="max-w-md w-full p-6 rounded-2xl bg-neutral-900 border border-neutral-800 text-center">
-          <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
-          <h3 className="text-xl font-bold mb-2">
-            {isAr ? 'منطقة مخصصة للإدارة فقط' : 'Administrator Access Only'}
-          </h3>
-          <p className="text-neutral-400 text-sm mb-6">
-            {isAr
-              ? `هذه اللوحة متاحة حصرياً للمدير البرمجي (${ADMIN_EMAIL}).`
-              : `This console is restricted to the administrator (${ADMIN_EMAIL}).`}
-          </p>
-          <button
-            onClick={onClose}
-            className="w-full py-2.5 rounded-xl bg-white text-black font-bold text-sm hover:bg-neutral-200 transition-colors"
-          >
-            {isAr ? 'العودة للموقع' : 'Return to Site'}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // Filtered requests
-  const filteredRequests = requests.filter((r) => {
-    if (requestStatusFilter !== 'all' && r.status !== requestStatusFilter) return false;
-    if (!requestSearchQuery.trim()) return true;
-    const q = requestSearchQuery.toLowerCase();
-    return (
-      r.name.toLowerCase().includes(q) ||
-      r.email.toLowerCase().includes(q) ||
-      r.appType.toLowerCase().includes(q) ||
-      r.description.toLowerCase().includes(q)
-    );
-  });
-
-  const totalUnreadChats = conversations.reduce((acc, c) => acc + (c.unreadByAdmin || 0), 0);
-  const newRequestsCount = requests.filter((r) => r.status === 'new').length;
+  }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-black text-neutral-900 dark:text-neutral-100 overflow-hidden animate-in fade-in">
-      {/* Top Navbar */}
-      <header className="px-4 sm:px-6 py-3.5 border-b border-neutral-200 dark:border-neutral-800 bg-white/90 dark:bg-neutral-950/90 backdrop-blur flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-neutral-500 hover:text-black dark:text-neutral-400 dark:hover:text-white bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-            aria-label="Back"
-          >
-            {isAr ? <ArrowRight className="w-4 h-4" /> : <ArrowLeft className="w-4 h-4" />}
-          </button>
-
-          <div className="flex items-center gap-2">
-            <EriksonLogo size="sm" />
-            <div>
-              <div className="flex items-center gap-1.5 text-xs font-bold font-mono uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                <Shield className="w-3.5 h-3.5 text-white" />
-                <span>ARIXON CONSOLE</span>
-              </div>
-              <div className="text-sm font-bold text-neutral-900 dark:text-white">
-                {isAr ? 'لوحة القيادة الإدارية' : 'Admin Control Center'}
-              </div>
+    <div className="fixed inset-0 z-50 flex bg-neutral-100 dark:bg-black text-neutral-900 dark:text-neutral-100 overflow-hidden font-sans">
+      {/* 1. DESKTOP SIDEBAR */}
+      <aside className="hidden lg:flex flex-col w-64 border-e border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 p-4 select-none shrink-0">
+        {/* Brand Header */}
+        <div className="flex items-center gap-3 px-3 py-3 mb-4 border-b border-neutral-100 dark:border-neutral-800/80">
+          <EriksonLogo size="sm" glow={true} />
+          <div>
+            <div className="font-extrabold text-sm tracking-tight text-neutral-900 dark:text-white leading-none">
+              ARIXON
+            </div>
+            <div className="text-[10px] font-mono text-neutral-400 uppercase tracking-widest mt-0.5">
+              Command Suite
             </div>
           </div>
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto p-1 bg-neutral-100 dark:bg-neutral-900 rounded-2xl">
+        {/* Navigation Items */}
+        <nav className="flex-1 space-y-1.5 text-xs font-semibold">
           <button
-            onClick={() => setActiveTab('requests')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === 'requests'
-                ? 'bg-white dark:bg-neutral-800 text-black dark:text-white shadow-xs'
-                : 'text-neutral-500 hover:text-black dark:hover:text-white'
+            onClick={() => setActiveTab('overview')}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
+              activeTab === 'overview'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
             }`}
           >
-            <Inbox className="w-3.5 h-3.5" />
-            <span>{isAr ? 'الطلبات' : 'Requests'}</span>
-            {newRequestsCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black text-white dark:bg-white dark:text-black font-bold">
-                {newRequestsCount}
+            <div className="flex items-center gap-2.5">
+              <LayoutDashboard className="w-4 h-4" />
+              <span>{isAr ? 'نظرة عامة' : 'Overview'}</span>
+            </div>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
+              activeTab === 'users'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Users className="w-4 h-4" />
+              <span>{isAr ? 'المستخدمون والحسابات' : 'Users & Accounts'}</span>
+            </div>
+            <span className="font-mono text-[10px] opacity-60">{users.length}</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('messages')}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
+              activeTab === 'messages'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <MessageSquare className="w-4 h-4" />
+              <span>{isAr ? 'الرسائل والمحادثات' : 'Messages'}</span>
+            </div>
+            {totalUnreadMessages > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
+                {totalUnreadMessages}
               </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('requests')}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
+              activeTab === 'requests'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>{isAr ? 'طلبات المشاريع' : 'Project Requests'}</span>
+            </div>
+            {totalNewRequests > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-black">
+                {totalNewRequests}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('tickets')}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
+              activeTab === 'tickets'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <LifeBuoy className="w-4 h-4" />
+              <span>{isAr ? 'تذاكر الدعم الفني' : 'Support Tickets'}</span>
+            </div>
+            {totalOpenTickets > 0 ? (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
+                {totalOpenTickets}
+              </span>
+            ) : (
+              <span className="font-mono text-[10px] opacity-60">{tickets.length}</span>
             )}
           </button>
 
           <button
             onClick={() => setActiveTab('updates')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
               activeTab === 'updates'
-                ? 'bg-white dark:bg-neutral-800 text-black dark:text-white shadow-xs'
-                : 'text-neutral-500 hover:text-black dark:hover:text-white'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
             }`}
           >
-            <Bell className="w-3.5 h-3.5" />
-            <span>{isAr ? 'التحديثات' : 'Updates'}</span>
-            {updatesList.length > 0 && (
-              <span className="text-[10px] font-mono text-neutral-400">({updatesList.length})</span>
-            )}
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="w-4 h-4" />
+              <span>{isAr ? 'التحديثات والإعلانات' : 'Releases'}</span>
+            </div>
+            <span className="font-mono text-[10px] opacity-60">{updates.length}</span>
           </button>
 
           <button
-            onClick={() => setActiveTab('conversations')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-              activeTab === 'conversations'
-                ? 'bg-white dark:bg-neutral-800 text-black dark:text-white shadow-xs'
-                : 'text-neutral-500 hover:text-black dark:hover:text-white'
+            onClick={() => setActiveTab('settings')}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all cursor-pointer ${
+              activeTab === 'settings'
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black shadow-xs font-bold'
+                : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900'
             }`}
           >
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span>{isAr ? 'المحادثات' : 'Chats'}</span>
-            {totalUnreadChats > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-500 text-white font-bold">
-                {totalUnreadChats}
+            <div className="flex items-center gap-2.5">
+              <Settings className="w-4 h-4" />
+              <span>{isAr ? 'إعدادات الإدارة' : 'Settings'}</span>
+            </div>
+          </button>
+        </nav>
+
+        {/* Sidebar Footer */}
+        <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-2">
+          <button
+            onClick={onClose}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-neutral-500 hover:text-black dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 text-xs transition-colors cursor-pointer"
+          >
+            {isAr ? <ArrowRight className="w-3.5 h-3.5" /> : <ArrowLeft className="w-3.5 h-3.5" />}
+            <span>{isAr ? 'العودة للموقع الرئيسي' : 'Return to Website'}</span>
+          </button>
+
+          <button
+            onClick={logout}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 text-xs transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>{isAr ? 'تسجيل الخروج' : 'Sign Out'}</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* 2. MAIN CONTENT AREA */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Top Header Bar */}
+        <header className="h-16 px-4 sm:px-8 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-950/80 backdrop-blur-md flex items-center justify-between gap-4 select-none shrink-0 z-10">
+          <div className="flex items-center gap-3">
+            {/* Mobile menu trigger */}
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden p-2 rounded-xl border border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-2 font-mono text-xs text-neutral-500">
+              <Shield className="w-4 h-4 text-emerald-500" />
+              <span className="font-bold text-neutral-900 dark:text-white uppercase hidden sm:inline">
+                {activeTab}
               </span>
+              <span className="hidden sm:inline" aria-hidden="true">·</span>
+              <span className="text-[11px] truncate max-w-[200px]">{currentUser?.email}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Sound Toggle */}
+            <button
+              onClick={handleToggleSound}
+              className="p-2 rounded-xl border border-neutral-200 dark:border-neutral-800 text-neutral-500 hover:text-black dark:hover:text-white bg-neutral-50 dark:bg-neutral-900 cursor-pointer"
+              title={soundEnabled ? 'Mute Chimes' : 'Enable Chimes'}
+            >
+              {soundEnabled ? <Volume2 className="w-4 h-4 text-emerald-500" /> : <VolumeX className="w-4 h-4 text-neutral-400" />}
+            </button>
+
+            {/* Notification Bell */}
+            <button
+              onClick={() => setIsNotificationsOpen(true)}
+              className="relative p-2 rounded-xl border border-neutral-200 dark:border-neutral-800 text-neutral-500 hover:text-black dark:hover:text-white bg-neutral-50 dark:bg-neutral-900 cursor-pointer"
+              title="Notifications"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadNotificationsCount > 0 && (
+                <span className="absolute -top-1 -end-1 w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse ring-2 ring-white dark:ring-black" />
+              )}
+            </button>
+
+            {/* Exit to Site Button */}
+            <button
+              onClick={onClose}
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-900 dark:hover:bg-neutral-800 text-xs font-semibold cursor-pointer"
+            >
+              <span>{isAr ? 'عرض الموقع' : 'View Site'}</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Sign Out Button */}
+            <button
+              onClick={logout}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-900 text-white dark:bg-white dark:text-black text-xs font-bold hover:opacity-90 transition-opacity cursor-pointer shadow-xs"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{isAr ? 'خروج' : 'Sign out'}</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Scrollable Workspace */}
+        <main className="flex-1 overflow-y-auto p-4 sm:p-8 bg-neutral-50/70 dark:bg-black pb-24 lg:pb-8">
+          <div className="max-w-7xl mx-auto">
+            {activeTab === 'overview' && (
+              <AdminOverviewSection
+                language={language}
+                users={users}
+                conversations={conversations}
+                requests={requests}
+                onNavigateTab={(tab) => setActiveTab(tab)}
+              />
             )}
+
+            {activeTab === 'users' && (
+              <AdminUsersSection
+                language={language}
+                users={users}
+                conversations={conversations}
+                requests={requests}
+                onOpenConversation={(uid) => {
+                  setSelectedUserIdForChat(uid);
+                  setActiveTab('messages');
+                }}
+                onOpenRequest={(req) => {
+                  setSelectedRequestForDetail(req);
+                  setActiveTab('requests');
+                }}
+              />
+            )}
+
+            {activeTab === 'messages' && (
+              <AdminMessagesSection
+                language={language}
+                conversations={conversations}
+                users={users}
+                initialSelectedUserId={selectedUserIdForChat}
+              />
+            )}
+
+            {activeTab === 'requests' && (
+              <AdminRequestsSection
+                language={language}
+                requests={requests}
+                users={users}
+                initialSelectedRequest={selectedRequestForDetail}
+              />
+            )}
+
+            {activeTab === 'tickets' && (
+              <AdminTicketsSection
+                language={language}
+                tickets={tickets}
+              />
+            )}
+
+            {activeTab === 'updates' && (
+              <AdminUpdatesSection
+                language={language}
+                updates={updates}
+              />
+            )}
+
+            {activeTab === 'settings' && (
+              <AdminSettingsSection
+                language={language}
+                onToggleLanguage={() => {
+                  const ev = new CustomEvent('toggle_arixon_language');
+                  window.dispatchEvent(ev);
+                }}
+                onSignOut={logout}
+              />
+            )}
+          </div>
+        </main>
+
+        {/* 3. MOBILE BOTTOM TABS NAVIGATION */}
+        <div className="lg:hidden fixed bottom-0 inset-x-0 h-16 border-t border-neutral-200 dark:border-neutral-800 bg-white/95 dark:bg-neutral-950/95 backdrop-blur-md flex items-center justify-around px-2 z-20">
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`flex flex-col items-center gap-1 text-[10px] font-semibold py-1 px-2 rounded-xl ${
+              activeTab === 'overview'
+                ? 'text-neutral-900 dark:text-white font-bold'
+                : 'text-neutral-400'
+            }`}
+          >
+            <LayoutDashboard className="w-4 h-4" />
+            <span>{isAr ? 'الرئيسية' : 'Overview'}</span>
           </button>
 
           <button
             onClick={() => setActiveTab('users')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+            className={`flex flex-col items-center gap-1 text-[10px] font-semibold py-1 px-2 rounded-xl ${
               activeTab === 'users'
-                ? 'bg-white dark:bg-neutral-800 text-black dark:text-white shadow-xs'
-                : 'text-neutral-500 hover:text-black dark:hover:text-white'
+                ? 'text-neutral-900 dark:text-white font-bold'
+                : 'text-neutral-400'
             }`}
           >
-            <Users className="w-3.5 h-3.5" />
-            <span>{isAr ? 'المستخدمين' : 'Users'}</span>
+            <Users className="w-4 h-4" />
+            <span>{isAr ? 'الحسابات' : 'Users'}</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('messages')}
+            className={`relative flex flex-col items-center gap-1 text-[10px] font-semibold py-1 px-2 rounded-xl ${
+              activeTab === 'messages'
+                ? 'text-neutral-900 dark:text-white font-bold'
+                : 'text-neutral-400'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            <span>{isAr ? 'الرسائل' : 'Chats'}</span>
+            {totalUnreadMessages > 0 && (
+              <span className="absolute top-0 end-1 w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('requests')}
+            className={`relative flex flex-col items-center gap-1 text-[10px] font-semibold py-1 px-2 rounded-xl ${
+              activeTab === 'requests'
+                ? 'text-neutral-900 dark:text-white font-bold'
+                : 'text-neutral-400'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>{isAr ? 'الطلبات' : 'Requests'}</span>
+            {totalNewRequests > 0 && (
+              <span className="absolute top-0 end-1 w-2 h-2 rounded-full bg-amber-500" />
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('tickets')}
+            className={`relative flex flex-col items-center gap-1 text-[10px] font-semibold py-1 px-2 rounded-xl ${
+              activeTab === 'tickets'
+                ? 'text-neutral-900 dark:text-white font-bold'
+                : 'text-neutral-400'
+            }`}
+          >
+            <LifeBuoy className="w-4 h-4" />
+            <span>{isAr ? 'التذاكر' : 'Tickets'}</span>
+            {totalOpenTickets > 0 && (
+              <span className="absolute top-0 end-1 w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex flex-col items-center gap-1 text-[10px] font-semibold py-1 px-2 rounded-xl ${
+              activeTab === 'settings'
+                ? 'text-neutral-900 dark:text-white font-bold'
+                : 'text-neutral-400'
+            }`}
+          >
+            <Settings className="w-4 h-4" />
+            <span>{isAr ? 'الإعدادات' : 'Settings'}</span>
           </button>
         </div>
-      </header>
-
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-hidden flex flex-col">
-        {/* TAB 1: PROJECT REQUESTS */}
-        {activeTab === 'requests' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-            <div className="max-w-7xl mx-auto space-y-6">
-              {/* Header & Controls */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-xl sm:text-2xl font-bold text-neutral-900 dark:text-white">
-                    {isAr ? 'طلبات المشاريع المقدمة' : 'Incoming Project Requests'}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-neutral-500 dark:text-neutral-400 mt-1">
-                    {isAr
-                      ? 'متابعة كافة طلبات الأنظمة والتطبيقات المقدمة عبر معالج الطلبات في الموقع.'
-                      : 'Track and manage client project submissions from the request wizard.'}
-                  </p>
-                </div>
-
-                {/* Filters */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="relative">
-                    <Search className="absolute start-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-neutral-400" />
-                    <input
-                      type="text"
-                      value={requestSearchQuery}
-                      onChange={(e) => setRequestSearchQuery(e.target.value)}
-                      placeholder={isAr ? 'بحث بالاسم أو النوع...' : 'Search by name or type...'}
-                      className="ps-9 pe-3 py-1.5 rounded-xl bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-900 dark:text-white focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex items-center p-1 rounded-xl bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs">
-                    {(['all', 'new', 'in_progress', 'done'] as const).map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => setRequestStatusFilter(st)}
-                        className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
-                          requestStatusFilter === st
-                            ? 'bg-white dark:bg-neutral-800 text-black dark:text-white shadow-xs'
-                            : 'text-neutral-500 hover:text-black dark:hover:text-white'
-                        }`}
-                      >
-                        {st === 'all'
-                          ? isAr ? 'الكل' : 'All'
-                          : st === 'new'
-                          ? isAr ? 'جديد' : 'New'
-                          : st === 'in_progress'
-                          ? isAr ? 'قيد التنفيذ' : 'In Progress'
-                          : isAr ? 'مكتمل' : 'Done'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Requests List */}
-              {loadingRequests ? (
-                <div className="p-12 text-center text-neutral-400">
-                  <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
-                  <span className="text-xs">{isAr ? 'جاري تحميل الطلبات...' : 'Loading requests...'}</span>
-                </div>
-              ) : filteredRequests.length === 0 ? (
-                <div className="p-12 text-center rounded-3xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 text-neutral-400">
-                  <Inbox className="w-10 h-10 mx-auto mb-2 opacity-40" />
-                  <p className="text-sm font-semibold">
-                    {isAr ? 'لا توجد طلبات مشاريع مطابقة.' : 'No project requests found.'}
-                  </p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {filteredRequests.map((req) => (
-                    <div
-                      key={req.id}
-                      className="p-5 rounded-3xl bg-neutral-50 dark:bg-neutral-900/60 border border-neutral-200 dark:border-neutral-800 flex flex-col justify-between space-y-4 hover:border-neutral-400 dark:hover:border-neutral-700 transition-all shadow-xs"
-                    >
-                      <div>
-                        {/* Header & Status */}
-                        <div className="flex items-center justify-between gap-2 mb-3">
-                          <span className="text-xs font-mono text-neutral-400">{formatDate(req.createdAt)}</span>
-                          <span
-                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                              req.status === 'new'
-                                ? 'bg-neutral-900 text-white dark:bg-white dark:text-black border-black dark:border-white'
-                                : req.status === 'in_progress'
-                                ? 'bg-neutral-200 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 border-neutral-400'
-                                : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
-                            }`}
-                          >
-                            {req.status === 'new'
-                              ? isAr ? 'جديد' : 'New'
-                              : req.status === 'in_progress'
-                              ? isAr ? 'قيد التنفيذ' : 'In Progress'
-                              : isAr ? 'مكتمل' : 'Done'}
-                          </span>
-                        </div>
-
-                        {/* Requester Name & App Type */}
-                        <h4 className="text-base font-bold text-neutral-900 dark:text-white">
-                          {req.name}
-                        </h4>
-                        <div className="text-xs font-semibold text-neutral-600 dark:text-neutral-300 mt-0.5">
-                          {req.appType}
-                        </div>
-
-                        {/* Contact details */}
-                        <div className="mt-3 space-y-1 text-xs text-neutral-500 dark:text-neutral-400">
-                          <div className="flex items-center gap-2">
-                            <Mail className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate font-mono">{req.email}</span>
-                          </div>
-                          {req.phone && (
-                            <div className="flex items-center gap-2">
-                              <Phone className="w-3.5 h-3.5 shrink-0" />
-                              <span className="font-mono" dir="ltr">{req.phone}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Description Preview */}
-                        <p className="mt-3 text-xs text-neutral-700 dark:text-neutral-300 line-clamp-3 bg-white dark:bg-black/40 p-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800/80">
-                          {req.description}
-                        </p>
-
-                        {/* Budget & Timeline */}
-                        <div className="mt-3 flex items-center justify-between text-[11px] font-mono text-neutral-500">
-                          <span>{req.budgetRange}</span>
-                          <span>·</span>
-                          <span>{req.timeline}</span>
-                        </div>
-                      </div>
-
-                      {/* Actions Footer */}
-                      <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-2">
-                        <select
-                          value={req.status}
-                          onChange={(e) => handleUpdateStatus(req.id, e.target.value as any)}
-                          className="px-2.5 py-1 text-xs rounded-lg bg-neutral-200 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-900 dark:text-white focus:outline-none cursor-pointer"
-                        >
-                          <option value="new">{isAr ? 'جديد' : 'New'}</option>
-                          <option value="in_progress">{isAr ? 'قيد التنفيذ' : 'In Progress'}</option>
-                          <option value="done">{isAr ? 'مكتمل' : 'Done'}</option>
-                        </select>
-
-                        <div className="flex items-center gap-1.5">
-                          {req.phone && (
-                            <a
-                              href={`https://wa.me/${req.phone.replace(/[^0-9]/g, '')}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-1.5 rounded-lg bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-white transition-colors"
-                              title="WhatsApp"
-                            >
-                              <MessageCircle className="w-3.5 h-3.5" />
-                            </a>
-                          )}
-                          <button
-                            onClick={() => setSelectedRequest(req)}
-                            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-neutral-900 text-white hover:bg-black dark:bg-white dark:text-black dark:hover:bg-neutral-200 transition-colors cursor-pointer"
-                          >
-                            {isAr ? 'تفاصيل' : 'Details'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Request Detail Modal */}
-            {selectedRequest && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
-                <div className="relative w-full max-w-xl p-6 rounded-3xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 shadow-2xl space-y-4">
-                  <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-3">
-                    <h4 className="text-lg font-bold text-neutral-900 dark:text-white">
-                      {isAr ? 'تفاصيل طلب المشروع' : 'Project Request Details'}
-                    </h4>
-                    <button
-                      onClick={() => setSelectedRequest(null)}
-                      className="p-1.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3 text-xs sm:text-sm text-neutral-800 dark:text-neutral-200">
-                    <div>
-                      <span className="text-neutral-500">{isAr ? 'الاسم:' : 'Name:'}</span>{' '}
-                      <span className="font-bold">{selectedRequest.name}</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500">{isAr ? 'البريد:' : 'Email:'}</span>{' '}
-                      <span className="font-mono">{selectedRequest.email}</span>
-                    </div>
-                    {selectedRequest.phone && (
-                      <div>
-                        <span className="text-neutral-500">{isAr ? 'الهاتف:' : 'Phone:'}</span>{' '}
-                        <span className="font-mono" dir="ltr">{selectedRequest.phone}</span>
-                      </div>
-                    )}
-                    <div>
-                      <span className="text-neutral-500">{isAr ? 'نوع التطبيق:' : 'App Type:'}</span>{' '}
-                      <span className="font-semibold">{selectedRequest.appType}</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500">{isAr ? 'الميزانية:' : 'Budget:'}</span>{' '}
-                      <span>{selectedRequest.budgetRange}</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500">{isAr ? 'المدة:' : 'Timeline:'}</span>{' '}
-                      <span>{selectedRequest.timeline}</span>
-                    </div>
-
-                    <div className="pt-2">
-                      <span className="text-neutral-500 font-semibold block mb-1">
-                        {isAr ? 'الوصف الكامل والميزات:' : 'Full Description & Key Features:'}
-                      </span>
-                      <div className="p-3 rounded-2xl bg-neutral-100 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 whitespace-pre-wrap font-sans text-xs leading-relaxed max-h-48 overflow-y-auto">
-                        {selectedRequest.description}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-neutral-500">{isAr ? 'تغيير الحالة:' : 'Change Status:'}</span>
-                      <select
-                        value={selectedRequest.status}
-                        onChange={(e) => handleUpdateStatus(selectedRequest.id, e.target.value as any)}
-                        className="px-2 py-1 text-xs rounded-lg bg-neutral-100 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-900 dark:text-white"
-                      >
-                        <option value="new">{isAr ? 'جديد' : 'New'}</option>
-                        <option value="in_progress">{isAr ? 'قيد التنفيذ' : 'In Progress'}</option>
-                        <option value="done">{isAr ? 'مكتمل' : 'Done'}</option>
-                      </select>
-                    </div>
-
-                    <button
-                      onClick={() => setSelectedRequest(null)}
-                      className="px-4 py-2 rounded-xl bg-neutral-900 text-white dark:bg-white dark:text-black font-semibold text-xs cursor-pointer"
-                    >
-                      {isAr ? 'إغلاق' : 'Close'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 2: COMPANY UPDATES */}
-        {activeTab === 'updates' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-            <div className="max-w-4xl mx-auto space-y-8">
-              {/* Header */}
-              <div>
-                <h3 className="text-xl sm:text-2xl font-bold text-neutral-900 dark:text-white">
-                  {isAr ? 'نشر تحديثات الشركة الرسمية' : 'Publish Official Company Updates'}
-                </h3>
-                <p className="text-xs sm:text-sm text-neutral-500 dark:text-neutral-400 mt-1">
-                  {isAr
-                    ? 'التحديثات المنشورة هنا ستظهر تلقائياً في قسم «آخر التحديثات» على الصفحة الرئيسية للموقع.'
-                    : 'Updates published here appear in the "Latest Updates" section on the public site.'}
-                </p>
-              </div>
-
-              {/* Publish Form */}
-              <form
-                onSubmit={handlePublishUpdate}
-                className="p-5 sm:p-7 rounded-3xl bg-neutral-50 dark:bg-neutral-900/60 border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-4"
-              >
-                <div className="flex items-center gap-2 text-xs font-bold font-mono uppercase text-neutral-500 dark:text-neutral-400 mb-1">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>{isAr ? 'إضافة تحديث جديد (ثنائي اللغة)' : 'New Update (Bilingual)'}</span>
-                </div>
-
-                {updatePublishError && (
-                  <div className="p-3 rounded-xl bg-neutral-200 dark:bg-neutral-800 text-xs text-neutral-900 dark:text-white">
-                    {updatePublishError}
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
-                      {isAr ? 'عنوان التحديث بالعربية *' : 'Update Title (Arabic) *'}
-                    </label>
-                    <input
-                      type="text"
-                      value={updateTitleAR}
-                      onChange={(e) => setUpdateTitleAR(e.target.value)}
-                      placeholder="مثال: إطلاق التحديث الجديد لنظام الكاشير..."
-                      dir="rtl"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 text-xs sm:text-sm text-neutral-900 dark:text-white focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
-                      {isAr ? 'عنوان التحديث بالإنجليزية *' : 'Update Title (English) *'}
-                    </label>
-                    <input
-                      type="text"
-                      value={updateTitleEN}
-                      onChange={(e) => setUpdateTitleEN(e.target.value)}
-                      placeholder="e.g. Launch of New POS Cashier Engine..."
-                      dir="ltr"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 text-xs sm:text-sm text-neutral-900 dark:text-white focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
-                      {isAr ? 'نص التحديث بالعربية *' : 'Update Body (Arabic) *'}
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={updateBodyAR}
-                      onChange={(e) => setUpdateBodyAR(e.target.value)}
-                      placeholder="تفاصيل التحديث والمزايا الجديدة..."
-                      dir="rtl"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 text-xs sm:text-sm text-neutral-900 dark:text-white focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
-                      {isAr ? 'نص التحديث بالإنجليزية *' : 'Update Body (English) *'}
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={updateBodyEN}
-                      onChange={(e) => setUpdateBodyEN(e.target.value)}
-                      placeholder="Details of the update and improvements..."
-                      dir="ltr"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 text-xs sm:text-sm text-neutral-900 dark:text-white focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    type="submit"
-                    disabled={publishingUpdate}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-neutral-900 text-white dark:bg-white dark:text-black font-bold text-xs sm:text-sm hover:opacity-90 transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    {publishingUpdate ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>{isAr ? 'جاري النشر...' : 'Publishing...'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="w-4 h-4" />
-                        <span>{isAr ? 'نشر التحديث الآن' : 'Publish Update Now'}</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-
-              {/* Published Updates List */}
-              <div className="space-y-4">
-                <h4 className="text-base font-bold text-neutral-900 dark:text-white">
-                  {isAr ? 'التحديثات المنشورة حالياً' : 'Currently Published Updates'}
-                </h4>
-
-                {loadingUpdates ? (
-                  <div className="p-8 text-center text-neutral-400">
-                    <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
-                    <span className="text-xs">{isAr ? 'جاري تحميل التحديثات...' : 'Loading updates...'}</span>
-                  </div>
-                ) : updatesList.length === 0 ? (
-                  <div className="p-8 text-center rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 text-neutral-400 text-xs">
-                    {isAr ? 'لا توجد تحديثات منشورة حتى الآن.' : 'No updates published yet.'}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {updatesList.map((upd) => (
-                      <div
-                        key={upd.id}
-                        className="p-4 sm:p-5 rounded-2xl bg-neutral-50 dark:bg-neutral-900/60 border border-neutral-200 dark:border-neutral-800 flex items-start justify-between gap-4"
-                      >
-                        <div className="space-y-1.5 flex-1">
-                          <div className="flex items-center gap-2 text-xs font-mono text-neutral-400">
-                            <Clock className="w-3 h-3" />
-                            <span>{formatDate(upd.createdAt)}</span>
-                          </div>
-                          <div className="text-sm font-bold text-neutral-900 dark:text-white">
-                            {isAr ? upd.titleAR : upd.titleEN}
-                          </div>
-                          <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                            {isAr ? upd.bodyAR : upd.bodyEN}
-                          </p>
-                          <div className="text-[11px] text-neutral-400 pt-1 font-mono">
-                            {isAr ? `(EN: ${upd.titleEN})` : `(AR: ${upd.titleAR})`}
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={() => handleDeleteUpdate(upd.id)}
-                          className="p-2 text-neutral-400 hover:text-red-500 rounded-lg hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors cursor-pointer shrink-0"
-                          title={isAr ? 'حذف التحديث' : 'Delete Update'}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: CONVERSATIONS (LIVE CHAT SPLIT VIEW) */}
-        {activeTab === 'conversations' && (
-          <div className="flex-1 flex overflow-hidden">
-            {/* Conversations Sidebar */}
-            <div className="w-full sm:w-80 md:w-96 border-e border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 flex flex-col shrink-0">
-              <div className="p-3 border-b border-neutral-200 dark:border-neutral-800">
-                <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
-                  {isAr ? 'المحادثات المباشرة مع الزوار' : 'Live Inquiries & Chats'}
-                </div>
-              </div>
-
-              {/* Conversations List */}
-              <div className="flex-1 overflow-y-auto divide-y divide-neutral-100 dark:divide-neutral-900">
-                {loadingConversations ? (
-                  <div className="p-8 text-center text-neutral-400 text-xs">
-                    <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
-                    <span>{isAr ? 'جاري تحميل المحادثات...' : 'Loading chats...'}</span>
-                  </div>
-                ) : conversations.length === 0 ? (
-                  <div className="p-8 text-center text-neutral-400 text-xs">
-                    <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                    <span>{isAr ? 'لا توجد محادثات حتى الآن.' : 'No conversations yet.'}</span>
-                  </div>
-                ) : (
-                  conversations.map((conv) => {
-                    const isSelected = selectedConversation?.userId === conv.userId;
-
-                    return (
-                      <button
-                        key={conv.userId}
-                        onClick={() => setSelectedConversation(conv)}
-                        className={`w-full text-start p-3.5 transition-colors flex items-start gap-3 relative cursor-pointer ${
-                          isSelected
-                            ? 'bg-neutral-100 dark:bg-neutral-900'
-                            : 'hover:bg-neutral-50 dark:hover:bg-neutral-900/50'
-                        }`}
-                      >
-                        <div className="relative shrink-0">
-                          <div className="w-10 h-10 rounded-xl bg-neutral-200 dark:bg-neutral-800 flex items-center justify-center font-bold text-sm text-neutral-800 dark:text-neutral-200">
-                            {conv.userName.slice(0, 1).toUpperCase()}
-                          </div>
-                          <span className="absolute -bottom-1 -end-1 text-xs">
-                            {conv.userCountryFlag || '🌍'}
-                          </span>
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-1 mb-0.5">
-                            <span className="font-semibold text-xs sm:text-sm truncate text-neutral-900 dark:text-white">
-                              {conv.userName}
-                            </span>
-                            <span className="text-[10px] text-neutral-400 font-mono shrink-0">
-                              {formatTime(conv.updatedAt)}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 mb-1">
-                            {conv.userUsername && (
-                              <span className="font-mono text-neutral-700 dark:text-neutral-300 font-medium">
-                                {conv.userUsername}
-                              </span>
-                            )}
-                            {conv.userCountry && <span>· {conv.userCountry}</span>}
-                          </div>
-
-                          <p className="text-xs text-neutral-600 dark:text-neutral-400 truncate">
-                            {conv.lastMessage || (isAr ? 'بدء محادثة...' : 'Started conversation...')}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* Chat Pane */}
-            <div className="hidden sm:flex flex-1 flex-col bg-white dark:bg-black">
-              {selectedConversation ? (
-                <>
-                  <div className="p-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between bg-neutral-50 dark:bg-neutral-950">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-neutral-200 dark:bg-neutral-800 flex items-center justify-center font-bold text-sm">
-                        {selectedConversation.userName.slice(0, 1).toUpperCase()}
-                      </div>
-                      <div>
-                        <div className="font-bold text-sm text-neutral-900 dark:text-white">
-                          {selectedConversation.userName}
-                        </div>
-                        <div className="text-xs text-neutral-500 font-mono">
-                          {selectedConversation.userEmail}
-                        </div>
-                      </div>
-                    </div>
-
-                    {selectedConversation.userPhone && (
-                      <a
-                        href={`https://wa.me/${selectedConversation.userPhone.replace(/[^0-9]/g, '')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-900 dark:text-white bg-neutral-200 dark:bg-neutral-800 rounded-xl"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        <span dir="ltr">{selectedConversation.userPhone}</span>
-                      </a>
-                    )}
-                  </div>
-
-                  {/* Messages Feed */}
-                  <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 bg-neutral-50/50 dark:bg-black/30">
-                    {loadingChat ? (
-                      <div className="h-full flex items-center justify-center text-neutral-400 text-xs">
-                        <Loader2 className="w-5 h-5 animate-spin mb-2" />
-                        <span>{isAr ? 'جاري تحميل الرسائل...' : 'Loading messages...'}</span>
-                      </div>
-                    ) : chatMessages.length === 0 ? (
-                      <div className="h-full flex items-center justify-center text-neutral-400 text-xs">
-                        <span>{isAr ? 'لا توجد رسائل سابقة.' : 'No messages found.'}</span>
-                      </div>
-                    ) : (
-                      chatMessages.map((msg) => {
-                        const isAdminMsg = msg.senderRole === 'admin';
-                        return (
-                          <div
-                            key={msg.id}
-                            className={`flex flex-col ${isAdminMsg ? 'items-end' : 'items-start'}`}
-                          >
-                            <div className="flex items-center gap-1.5 mb-1 px-1 text-[11px] text-neutral-400">
-                              <span className="font-semibold text-neutral-700 dark:text-neutral-300">
-                                {isAdminMsg ? (isAr ? 'أنت (الإدارة)' : 'You (Admin)') : msg.senderName}
-                              </span>
-                              <span>·</span>
-                              <span className="font-mono text-[10px]">{formatTime(msg.createdAt)}</span>
-                            </div>
-
-                            <div
-                              className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-xs sm:text-sm leading-relaxed ${
-                                isAdminMsg
-                                  ? 'bg-neutral-900 text-white dark:bg-white dark:text-black rounded-br-xs'
-                                  : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-900 dark:text-white rounded-bl-xs'
-                              }`}
-                            >
-                              {msg.text}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                    <div ref={chatEndRef} />
-                  </div>
-
-                  {/* Reply Bar */}
-                  <form onSubmit={handleSendAdminReply} className="p-3 border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 flex gap-2">
-                    <input
-                      type="text"
-                      value={adminReplyText}
-                      onChange={(e) => setAdminReplyText(e.target.value)}
-                      placeholder={isAr ? 'اكتب ردك كمسؤول...' : 'Type response as admin...'}
-                      className="flex-1 px-4 py-2.5 rounded-xl bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs sm:text-sm text-neutral-900 dark:text-white focus:outline-none"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!adminReplyText.trim() || sendingReply}
-                      className="px-4 py-2.5 rounded-xl bg-neutral-900 text-white dark:bg-white dark:text-black font-bold text-xs disabled:opacity-50 cursor-pointer"
-                    >
-                      {sendingReply ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    </button>
-                  </form>
-                </>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-neutral-400 text-xs">
-                  {isAr ? 'اختر محادثة لعرض الرسائل والرد عليها' : 'Select a conversation to reply'}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: USERS DATABASE */}
-        {activeTab === 'users' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-            <div className="max-w-7xl mx-auto space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-xl font-bold text-neutral-900 dark:text-white">
-                    {isAr ? 'سجل المستخدمين المسجلين' : 'Registered Users Database'}
-                  </h3>
-                  <p className="text-xs text-neutral-500 mt-1">
-                    {isAr ? `إجمالي الحسابات: ${usersList.length}` : `Total accounts: ${usersList.length}`}
-                  </p>
-                </div>
-
-                <div className="relative w-full sm:w-64">
-                  <Search className="absolute start-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder={isAr ? 'بحث بالاسم أو البريد...' : 'Search by name or email...'}
-                    className="w-full ps-9 pe-3 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-900 dark:text-white focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {loadingUsers ? (
-                <div className="p-12 text-center text-neutral-400">
-                  <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
-                  <span className="text-xs">{isAr ? 'جاري تحميل المستخدمين...' : 'Loading users...'}</span>
-                </div>
-              ) : (
-                <div className="rounded-3xl border border-neutral-200 dark:border-neutral-800 overflow-hidden bg-white dark:bg-neutral-950">
-                  <table className="w-full text-start text-xs">
-                    <thead className="bg-neutral-50 dark:bg-neutral-900/80 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500">
-                      <tr>
-                        <th className="py-3 px-4 text-start">{isAr ? 'المستخدم' : 'User'}</th>
-                        <th className="py-3 px-4 text-start">{isAr ? 'اسم المستخدم' : 'Username'}</th>
-                        <th className="py-3 px-4 text-start">{isAr ? 'الدولة' : 'Country'}</th>
-                        <th className="py-3 px-4 text-start">{isAr ? 'الهاتف' : 'Phone'}</th>
-                        <th className="py-3 px-4 text-start">{isAr ? 'تاريخ التسجيل' : 'Registered'}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-900">
-                      {usersList
-                        .filter((u) => {
-                          if (!searchQuery.trim()) return true;
-                          const q = searchQuery.toLowerCase();
-                          return (
-                            (u.name || '').toLowerCase().includes(q) ||
-                            (u.email || '').toLowerCase().includes(q) ||
-                            (u.username || '').toLowerCase().includes(q)
-                          );
-                        })
-                        .map((u) => (
-                          <tr key={u.uid} className="hover:bg-neutral-50 dark:hover:bg-neutral-900/40">
-                            <td className="py-3 px-4">
-                              <div className="font-bold text-neutral-900 dark:text-white">{u.name || 'Anonymous'}</div>
-                              <div className="text-[11px] text-neutral-500 font-mono">{u.email}</div>
-                            </td>
-                            <td className="py-3 px-4 font-mono text-neutral-700 dark:text-neutral-300">
-                              {u.username || '—'}
-                            </td>
-                            <td className="py-3 px-4 text-neutral-700 dark:text-neutral-300">
-                              {u.countryFlag} {u.country || '—'}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-neutral-700 dark:text-neutral-300" dir="ltr">
-                              {u.fullPhone || u.phone || '—'}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-neutral-400">
-                              {formatDate(u.createdAt)}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
+
+      {/* 4. NOTIFICATIONS MODAL */}
+      <AdminNotificationsModal
+        language={language}
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        notifications={notificationsFeed}
+        unreadCount={unreadNotificationsCount}
+        soundEnabled={soundEnabled}
+        onToggleSound={handleToggleSound}
+        onNavigateToItem={(type, targetId) => {
+          if (type === 'user') setActiveTab('users');
+          else if (type === 'message') {
+            if (targetId) setSelectedUserIdForChat(targetId);
+            setActiveTab('messages');
+          } else if (type === 'request') {
+            if (targetId) {
+              const req = requests.find((r) => r.id === targetId);
+              if (req) setSelectedRequestForDetail(req);
+            }
+            setActiveTab('requests');
+          } else if (type === 'ticket') {
+            setActiveTab('tickets');
+          }
+        }}
+      />
+
+      {/* 5. INACTIVITY TIMEOUT WARNING MODAL */}
+      {showInactivityWarning && (
+        <AdminInactivityWarning
+          language={language}
+          secondsRemaining={secondsRemaining}
+          onStaySignedIn={() => {
+            lastActivityRef.current = Date.now();
+            setShowInactivityWarning(false);
+          }}
+          onSignOutNow={() => {
+            logout();
+            onClose();
+          }}
+        />
+      )}
     </div>
   );
 };
